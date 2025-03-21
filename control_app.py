@@ -12,12 +12,14 @@ class ControlApp(QMainWindow):
         super().__init__()
         self.setWindowTitle("Control Panel")
         
-        # TCP/IP settings for two backends
+        # TCP/IP settings for two backends with two sockets each
         self.backends = [
-            {"host": "localhost", "port": 12345, "name": "Backend 1", 
-             "reconnect_start": 0, "is_reconnecting": False, "ready": False},
-            {"host": "localhost", "port": 12346, "name": "Backend 2",
-             "reconnect_start": 0, "is_reconnecting": False, "ready": False}
+            {"host": "localhost", "ports": [9090, 9091], "name": "Backend 1", 
+             "reconnect_start": 0, "is_reconnecting": False, "ready": False,
+             "sockets": [None, None]},  # Store socket objects
+            {"host": "localhost", "ports": [9092, 9093], "name": "Backend 2",
+             "reconnect_start": 0, "is_reconnecting": False, "ready": False,
+             "sockets": [None, None]}   # Store socket objects
         ]
         self.is_toggle_on = False
         self.RECONNECT_TIMEOUT = 60  # 1 minute timeout for reconnection
@@ -36,7 +38,6 @@ class ControlApp(QMainWindow):
         
         # Create input fields for each backend
         self.ip_inputs = []
-        self.port_inputs = []
         
         for i, backend in enumerate(self.backends):
             # IP input
@@ -49,15 +50,10 @@ class ControlApp(QMainWindow):
             config_layout.addWidget(ip_input, i, 1)
             self.ip_inputs.append(ip_input)
             
-            # Port input
-            port_label = QLabel(f"{backend['name']} Port:")
+            # Port labels (fixed ports)
+            port_label = QLabel(f"Ports: {backend['ports'][0]}, {backend['ports'][1]}")
             port_label.setStyleSheet("font-size: 32px;")
-            port_input = QLineEdit(str(backend['port']))
-            port_input.setPlaceholderText("Enter port number")
-            port_input.setStyleSheet("font-size: 32px; padding: 5px;")
             config_layout.addWidget(port_label, i, 2)
-            config_layout.addWidget(port_input, i, 3)
-            self.port_inputs.append(port_input)
         
         # Add apply button
         self.apply_btn = QPushButton("Apply Configuration")
@@ -175,84 +171,36 @@ class ControlApp(QMainWindow):
         self.event_btn.setEnabled(True)  # Enable event button in initial state
         
     def check_backend_status(self):
-        current_time = time.time()
-        any_reconnecting = False
-        
+        # 첫 번째 포트(9090)만 사용하여 상태 및 READY 메시지 확인
         for i, backend in enumerate(self.backends):
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.settimeout(0.5)  # Set timeout to 0.5 seconds
-                    s.connect((backend["host"], backend["port"]))
-                    
-                    # Check for READY message
+                    s.settimeout(0.5)
+                    s.connect((backend["host"], backend["ports"][0]))  # 첫 번째 포트만 사용
                     s.setblocking(False)
                     try:
                         message = s.recv(1024).decode()
                         if message == "READY":
-                            print(f"Received READY message from {backend['name']}")
                             backend["ready"] = True
-                            # Enable button if both backends are ready and we're waiting for READY
                             if all(b["ready"] for b in self.backends) and self.event_sent:
                                 self.event_btn.setEnabled(True)
-                                self.event_sent = False  # Reset event sent flag
-                                print("All backends ready, enabling event button")
+                                self.event_sent = False
                     except:
-                        pass  # No message available
+                        pass
                     
-                    # Connection successful
+                    # 연결 성공 시 상태 업데이트
                     self.status_labels[i].setText(f"{backend['name']}: Connected")
                     self.status_labels[i].setStyleSheet("color: green; font-size: 32px;")
-                    backend["is_reconnecting"] = False
-                    backend["reconnect_start"] = 0
             except Exception:
                 # Connection failed
                 if not backend["is_reconnecting"]:
-                    # Start reconnection attempt
                     backend["is_reconnecting"] = True
-                    backend["reconnect_start"] = current_time
+                    backend["reconnect_start"] = time.time()
                     self.status_labels[i].setText(f"{backend['name']}: Reconnecting...")
                     self.status_labels[i].setStyleSheet("color: orange; font-size: 32px;")
-                    any_reconnecting = True
-                else:
-                    # Already in reconnection process
-                    elapsed_time = int(current_time - backend["reconnect_start"])
-                    remaining_time = self.RECONNECT_TIMEOUT - elapsed_time
-                    any_reconnecting = True
-                    
-                    if remaining_time <= 0:
-                        # Reconnection timeout
-                        backend["is_reconnecting"] = False
-                        backend["ready"] = False  # Reset ready state on connection timeout
-                        self.status_labels[i].setText(f"{backend['name']}: Not Connected")
-                        self.status_labels[i].setStyleSheet("color: red; font-size: 32px;")
-                        if self.is_toggle_on:
-                            self.toggle_btn.setText("Start")
-                            self.toggle_btn.setStyleSheet("""
-                                QPushButton {
-                                    font-size: 32px;
-                                    font-weight: bold;
-                                    padding: 5px;
-                                    background-color: #4CAF50;
-                                    color: white;
-                                    border-radius: 5px;
-                                }
-                                QPushButton:hover {
-                                    background-color: #45a049;
-                                }
-                            """)
-                            self.is_toggle_on = False
-                            self.event_btn.setEnabled(False)  # Enable event button on timeout
-                            QMessageBox.warning(self, "Connection Lost", 
-                                "Connection timeout. System reset to 'Start' state.")
-                    else:
-                        # Still trying to reconnect
-                        self.status_labels[i].setText(
-                            f"{backend['name']}: Reconnecting ({remaining_time}s)")
-                        self.status_labels[i].setStyleSheet("color: orange; font-size: 32px;")
-                        self.event_btn.setEnabled(True)  # Enable event button on timeout
         
         # If any server is reconnecting during start stage, change to start state
-        if any_reconnecting and self.is_toggle_on:
+        if any(backend["is_reconnecting"] for backend in self.backends) and self.is_toggle_on:
             self.toggle_btn.setText("Start")
             self.toggle_btn.setStyleSheet("""
                 QPushButton {
@@ -282,14 +230,8 @@ class ControlApp(QMainWindow):
                 if not ip:
                     raise ValueError(f"{backend['name']}: IP address cannot be empty")
                 
-                # Validate port
-                port = int(self.port_inputs[i].text().strip())
-                if port < 1024 or port > 65535:
-                    raise ValueError(f"{backend['name']}: Port must be between 1024 and 65535")
-                
                 # Update backend configuration
                 self.backends[i]['host'] = ip
-                self.backends[i]['port'] = port
                 
             except ValueError as e:
                 QMessageBox.warning(self, "Configuration Error", str(e))
@@ -311,12 +253,14 @@ class ControlApp(QMainWindow):
         
         for i, backend in enumerate(self.backends):
             try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.settimeout(0.5)  # Set timeout to 0.5 seconds
-                    s.connect((backend["host"], backend["port"]))
-                    s.sendall(message.encode())
-                    self.status_labels[i].setText(f"{backend['name']}: Connected")
-                    self.status_labels[i].setStyleSheet("color: green; font-size: 32px;")
+                # 두 번째 포트(9091)로만 메시지 전송
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.5)
+                s.connect((backend["host"], backend["ports"][1]))  # 두 번째 포트 사용
+                s.sendall(message.encode())
+                
+                self.status_labels[i].setText(f"{backend['name']}: Connected")
+                self.status_labels[i].setStyleSheet("color: green; font-size: 32px;")
             except Exception as e:
                 success = False
                 failed_backends.append(backend["name"])
